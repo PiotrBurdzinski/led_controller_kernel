@@ -1,0 +1,1 @@
+obj-$(CONFIG_LEDS_CONTROLLER_MODULE)           += leds-controller.o

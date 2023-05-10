@@ -1,0 +1,6 @@
+config LEDS_CONTROLLER_MODULE
+    bool "LED Controller Module"
+    default n
+    help
+        This option enables the led controller module to be used for
+        blinking the LEDs of the device based on nodes.
