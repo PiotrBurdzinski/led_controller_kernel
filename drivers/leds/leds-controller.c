@@ -1,16 +1,20 @@
 #include <linux/module.h>
-#include <linux/proc_fs.h>
-#include <linux/seq_file.h>
+#include <linux/kernel.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <linux/delay.h>
+#include <linux/string.h>
+
 
 #define LED_RED_NODE_FILE "/sys/devices/platform/11016000.i2c5/i2c-5/5-0034/mt6360_pmu_rgbled.4.auto/leds/red/brightness"
 #define LED_GREEN_NODE_FILE "/sys/devices/platform/11016000.i2c5/i2c-5/5-0034/mt6360_pmu_rgbled.4.auto/leds/green/brightness"
-#define LED_MAX_BRIGHTNESS "13"
-#define LED_BLINK_DELAY 500
 
-static unsigned int red_blink = 0, green_blink = 0;
+#define LED_BLINK_DELAY 400
+#define LED_MAX_BRIGHTNESS "13"
+
+static char red_value[32] = "0";
+static char green_value[32] = "0";
+static char alert_value[32] = "0";
 
 void write_to_file(const char* path, const char* data, size_t size) {
     struct file* filep;
@@ -35,25 +39,28 @@ void write_to_file(const char* path, const char* data, size_t size) {
     filp_close(filep, NULL);
 }
 
-static void led_controller_blink(size_t led)
+static ssize_t led_controller_set_brightness(size_t led, const char *buf, size_t count)
 {
-    int i = 0, blinks = red_blink;
+    int i;
     const char* path = LED_RED_NODE_FILE;
+    long blinks;
+    if (kstrtol(buf, 10, &blinks))
+        return -EINVAL;
     if (led == 1){
         path = LED_GREEN_NODE_FILE;
-        blinks = green_blink;
     }
     
-    for(i; i < blinks; i++){
-        write_to_file(path, LED_MAX_BRIGHTNESS, 3);
-        msleep(LED_BLINK_DELAY);
-        write_to_file(path, "0", 3);
+    for(i = 0; i < blinks; i++){
+        write_to_file(path, LED_MAX_BRIGHTNESS, sizeof(buf));
+        msleep(500);
+        write_to_file(path, "0", sizeof(buf));
         if (i < blinks)
-            msleep(LED_BLINK_DELAY);
+            msleep(500);
     }
+    return count;
 }
 
-static void led_controller_alert(){
+static void led_alert(){
     write_to_file(LED_RED_NODE_FILE, LED_MAX_BRIGHTNESS, 3);
     msleep(LED_BLINK_DELAY);
     write_to_file(LED_RED_NODE_FILE, "0", 3);
@@ -62,90 +69,105 @@ static void led_controller_alert(){
     write_to_file(LED_GREEN_NODE_FILE, "0", 3);
 }
 
-static int red_blink_show(struct seq_file *m, void *v)
+static ssize_t red_blinks_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
 {
-    seq_printf(m, "%u\n", red_blink);
-    return 0;
-}
+    ssize_t ret;
 
-static int red_blink_open(struct inode *inode, struct file *file)
-{
-    return single_open(file, red_blink_show, inode->i_private);
-}
+    ret = led_controller_set_brightness(0, buf, count);
+    if (ret < 0) {
+        return ret;
+    }
 
-static ssize_t red_blink_write(struct file *file, const char __user *buffer,
-    size_t count, loff_t *ppos)
-{
-    int val;
-    if (kstrtoint_from_user(buffer, count, 10, &val) != 0) {
-        return -EINVAL;
-    }
-    if (val > 0){
-        red_blink = val;
-        led_controller_blink(0);
-    } else {
-        led_controller_alert();
-    }
+    strncpy(red_value, buf, sizeof(red_value));
     return count;
 }
 
-static int green_blink_show(struct seq_file *m, void *v)
+static ssize_t green_blinks_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
 {
-    seq_printf(m, "%u\n", green_blink);
-    return 0;
-}
+    ssize_t ret;
 
-static int green_blink_open(struct inode *inode, struct file *file)
-{
-    return single_open(file, green_blink_show, inode->i_private);
-}
-
-static ssize_t green_blink_write(struct file *file, const char __user *buffer,
-    size_t count, loff_t *ppos)
-{
-    int val;
-    if (kstrtoint_from_user(buffer, count, 10, &val) != 0) {
-        return -EINVAL;
+    ret = led_controller_set_brightness(1, buf, count);
+    if (ret < 0) {
+        return ret;
     }
-    green_blink = val;
-    led_controller_blink(1);
+
+    strncpy(green_value, buf, sizeof(green_value));
     return count;
 }
 
-static const struct file_operations red_blink_fops = {
-    .owner = THIS_MODULE,
-    .open = red_blink_open,
-    .write = red_blink_write,
-    .read = seq_read,
-    .llseek = seq_lseek,
-    .release = single_release,
-};
-
-static const struct file_operations green_blink_fops = {
-    .owner = THIS_MODULE,
-    .open = green_blink_open,
-    .write = green_blink_write,
-    .read = seq_read,
-    .llseek = seq_lseek,
-    .release = single_release,
-};
-
-static int __init blinks_init(void)
+static ssize_t led_alert_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
 {
-    proc_create("red_blink", 0666, NULL, &red_blink_fops);
-    proc_create("green_blink", 0666, NULL, &green_blink_fops);
+    led_alert(); led_alert();
+    strncpy(green_value, buf, sizeof(green_value));
+    return count;
+}
+
+static ssize_t red_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+    return snprintf(buf, PAGE_SIZE, "%s\n", red_value);
+}
+
+static ssize_t green_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+    return snprintf(buf, PAGE_SIZE, "%s\n", green_value);
+}
+
+static ssize_t alert_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+    return snprintf(buf, PAGE_SIZE, "%s\n", alert_value);
+}
+
+static struct kobj_attribute led_controller_red_attr =
+    __ATTR(red_blinks, 0755, red_show, red_blinks_store);
+
+static struct kobj_attribute led_controller_green_attr =
+    __ATTR(green_blinks, 0755, green_show, green_blinks_store);
+
+static struct kobj_attribute led_controller_alert_attr =
+    __ATTR(led_alert, 0755, alert_show, led_alert_store);
+
+static struct attribute *led_controller_attrs[] = {
+    &led_controller_red_attr.attr,
+    &led_controller_green_attr.attr,
+    &led_controller_alert_attr.attr,
+    NULL,
+};
+
+static struct attribute_group led_controller_attr_group = {
+    .attrs = led_controller_attrs,
+};
+
+static struct kobject *led_controller_kobj;
+
+static int __init led_controller_init(void)
+{
+    int ret;
+
+    led_controller_kobj = kobject_create_and_add("led_controller", NULL);
+    if (!led_controller_kobj) {
+        pr_err("Failed to create sysfs directory\n");
+        return -ENOMEM;
+    }
+
+    ret = sysfs_create_group(led_controller_kobj, &led_controller_attr_group);
+    if (ret) {
+        pr_err("Failed to create sysfs files\n");
+        kobject_put(led_controller_kobj);
+        return ret;
+    }
+
     return 0;
 }
 
-static void __exit blinks_exit(void)
+static void __exit led_controller_exit(void)
 {
-    remove_proc_entry("red_blink", NULL);
-    remove_proc_entry("green_blink", NULL);
+    sysfs_remove_group(led_controller_kobj, &led_controller_attr_group);
+    kobject_put(led_controller_kobj);
 }
+
+module_init(led_controller_init);
+module_exit(led_controller_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Piotr Burdzinski");
 MODULE_DESCRIPTION("LED Blinking module for mt6360_pmu_rgb led");
-
-module_init(blinks_init);
-module_exit(blinks_exit);
